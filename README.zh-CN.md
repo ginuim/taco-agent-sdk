@@ -89,10 +89,18 @@ for await (const msg of query({
 - `model`：模型名
 - `apiKey` / `baseURL`：模型服务配置
 - `allowedTools` / `disallowedTools`：工具白名单/黑名单
-- `permissionMode`：权限模式
+- `permissionMode`：权限模式；`plan` 只允许只读工具，`acceptEdits` 默认拒绝 `Bash`，`default` 需要显式 `canUseTool` 审批
+- `canUseTool`：自定义工具审批回调，子 Agent 会继承父级审批逻辑
+- `additionalDirectories`：除 `cwd` 外，允许文件工具访问的额外目录（支持绝对路径和 `~`，如 `~/.agents`）
+- `sandbox.network.allowedDomains`：限制 `WebFetch` 可访问域名
+- `sandbox.network.allowLocalBinding`：是否允许 `WebFetch` 访问本地/私网地址（默认 `false`）
 - `maxTurns`：最大 agent 回合数
 - `maxBudgetUsd`：预算上限
 - `includePartialMessages`：是否输出 token 级增量事件（默认 `false`）
+
+## 安全边界
+
+内置文件工具会把路径规范化后限制在 `cwd` 和 `additionalDirectories` 内，防止 `../` 或绝对路径越界；`additionalDirectories` 支持绝对路径和 `~` 家目录写法。`WebFetch` 只允许 `http`/`https`，默认拒绝本地、私网和云元数据地址，并过滤敏感请求头；若本地调试需要，可显式设置 `sandbox.network.allowLocalBinding = true`。`Bash` 使用最小环境变量，非零退出码会作为工具错误返回。
 
 ## 说明
 

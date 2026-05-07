@@ -191,6 +191,8 @@ export interface ToolInputSchema {
 
 export interface ToolContext {
   cwd: string
+  allowedDirectories?: string[]
+  sandbox?: SandboxSettings
   abortSignal?: AbortSignal
   /** Parent agent's LLM provider (inherited by subagents) */
   provider?: import('./providers/types.js').LLMProvider
@@ -198,6 +200,8 @@ export interface ToolContext {
   model?: string
   /** Parent agent's API type */
   apiType?: import('./providers/types.js').ApiType
+  /** Parent agent's permission checker, inherited by subagents */
+  canUseTool?: CanUseToolFn
 }
 
 export interface ToolResult {
@@ -465,6 +469,7 @@ export interface QueryResult {
 
 export interface QueryEngineConfig {
   cwd: string
+  allowedDirectories?: string[]
   model: string
   /** LLM provider instance (created from apiType) */
   provider: import('./providers/types.js').LLMProvider
@@ -479,6 +484,7 @@ export interface QueryEngineConfig {
   canUseTool: CanUseToolFn
   includePartialMessages: boolean
   abortSignal?: AbortSignal
+  sandbox?: SandboxSettings
   agents?: Record<string, AgentDefinition>
   /** Hook registry for lifecycle events */
   hookRegistry?: import('./hooks.js').HookRegistry

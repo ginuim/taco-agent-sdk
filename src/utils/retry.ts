@@ -56,6 +56,21 @@ export function getRetryDelay(attempt: number, config: RetryConfig = DEFAULT_RET
   return Math.min(delay + jitter, config.maxDelayMs)
 }
 
+function sleep(ms: number, abortSignal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (abortSignal?.aborted) {
+      reject(new Error('Aborted'))
+      return
+    }
+
+    const timer = setTimeout(resolve, ms)
+    abortSignal?.addEventListener('abort', () => {
+      clearTimeout(timer)
+      reject(new Error('Aborted'))
+    }, { once: true })
+  })
+}
+
 /**
  * Execute a function with retries.
  */
@@ -86,7 +101,7 @@ export async function withRetry<T>(
 
       // Wait before retry
       const delay = getRetryDelay(attempt, config)
-      await new Promise((resolve) => setTimeout(resolve, delay))
+      await sleep(delay, abortSignal)
     }
   }
 
@@ -98,10 +113,12 @@ export async function withRetry<T>(
  */
 export function isPromptTooLongError(err: any): boolean {
   if (err?.status === 400) {
-    const message = err?.error?.error?.message || err?.message || ''
+    const message = String(err?.error?.error?.message || err?.message || '').toLowerCase()
     return message.includes('prompt is too long') ||
-      message.includes('max_tokens') ||
-      message.includes('context length')
+      message.includes('context length') ||
+      message.includes('maximum context length') ||
+      message.includes('input is too long') ||
+      message.includes('too many tokens')
   }
   return false
 }

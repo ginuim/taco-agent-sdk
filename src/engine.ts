@@ -456,7 +456,9 @@ export class QueryEngine {
       maxOutputRecoveryAttempts = 0
 
       // Execute tools (concurrent read-only, serial mutations)
+      if (this.config.abortSignal?.aborted) break
       const toolResults = await this.executeTools(toolUseBlocks)
+      if (this.config.abortSignal?.aborted) break
 
       // Yield tool results
       for (const result of toolResults) {
@@ -486,8 +488,6 @@ export class QueryEngine {
           is_error: r.is_error,
         })),
       })
-
-      if (response.stopReason === 'end_turn') break
     }
 
     // Hook: Stop (end of agentic loop)
@@ -528,15 +528,21 @@ export class QueryEngine {
   ): Promise<(ToolResult & { tool_name?: string })[]> {
     const context: ToolContext = {
       cwd: this.config.cwd,
+      allowedDirectories: this.config.allowedDirectories,
+      sandbox: this.config.sandbox,
       abortSignal: this.config.abortSignal,
       provider: this.provider,
       model: this.config.model,
       apiType: this.provider.apiType,
+      canUseTool: this.config.canUseTool,
     }
 
-    const MAX_CONCURRENCY = parseInt(
+    const parsedConcurrency = parseInt(
       process.env.AGENT_SDK_MAX_TOOL_CONCURRENCY || '10',
     )
+    const MAX_CONCURRENCY = Number.isFinite(parsedConcurrency) && parsedConcurrency > 0
+      ? parsedConcurrency
+      : 10
 
     // Partition into read-only (concurrent) and mutation (serial)
     const readOnly: Array<{ block: ToolUseBlock; tool?: ToolDefinition }> = []

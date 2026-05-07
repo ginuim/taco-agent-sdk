@@ -60,6 +60,8 @@ export class Agent {
   private abortCtrl: AbortController | null = null
   private currentEngine: QueryEngine | null = null
   private hookRegistry: HookRegistry
+  private queryInProgress = false
+  private closed = false
 
   constructor(options: AgentOptions = {}) {
     // Shallow copy to avoid mutating caller's object
@@ -232,120 +234,147 @@ export class Agent {
     prompt: string,
     overrides?: Partial<AgentOptions>,
   ): AsyncGenerator<SDKMessage, void> {
-    await this.setupDone
-
-    const opts = { ...this.cfg, ...overrides }
-    const cwd = opts.cwd || process.cwd()
-
-    // Create abort controller for this query
-    this.abortCtrl = opts.abortController || new AbortController()
-    if (opts.abortSignal) {
-      opts.abortSignal.addEventListener('abort', () => this.abortCtrl?.abort(), { once: true })
+    if (this.closed) {
+      throw new Error('Agent is closed')
     }
-
-    // Resolve systemPrompt (handle preset object)
-    let systemPrompt: string | undefined
-    let appendSystemPrompt = opts.appendSystemPrompt
-    if (typeof opts.systemPrompt === 'object' && opts.systemPrompt?.type === 'preset') {
-      systemPrompt = undefined // Use engine default (default style)
-      if (opts.systemPrompt.append) {
-        appendSystemPrompt = (appendSystemPrompt || '') + '\n' + opts.systemPrompt.append
-      }
-    } else {
-      systemPrompt = opts.systemPrompt as string | undefined
+    if (this.queryInProgress) {
+      throw new Error('Agent does not support concurrent query() calls')
     }
+    this.queryInProgress = true
 
-    // Build canUseTool based on permission mode
-    const permMode = opts.permissionMode ?? 'bypassPermissions'
-    const canUseTool: CanUseToolFn = opts.canUseTool ?? (async (_tool, _input) => {
-      if (permMode === 'bypassPermissions' || permMode === 'dontAsk' || permMode === 'auto') {
-        return { behavior: 'allow' }
-      }
-      if (permMode === 'acceptEdits') {
-        return { behavior: 'allow' }
-      }
-      return { behavior: 'allow' }
-    })
+    try {
+      await this.setupDone
 
-    // Resolve tools with overrides
-    let tools = this.toolPool
-    if (overrides?.allowedTools || overrides?.disallowedTools) {
-      tools = filterTools(tools, overrides.allowedTools, overrides.disallowedTools)
-    }
-    if (overrides?.tools) {
-      const ot = overrides.tools
-      if (Array.isArray(ot) && ot.length > 0 && typeof ot[0] === 'string') {
-        tools = filterTools(this.toolPool, ot as string[])
-      } else if (Array.isArray(ot)) {
-        tools = ot as ToolDefinition[]
-      }
-    }
+      const opts = { ...this.cfg, ...overrides }
+      const cwd = opts.cwd || process.cwd()
+      const allowedDirectories = [
+        cwd,
+        ...(opts.additionalDirectories ?? []),
+      ]
 
-    // Recreate provider if overrides change credentials or apiType
-    let provider = this.provider
-    if (overrides?.apiType || overrides?.apiKey || overrides?.baseURL) {
-      const resolvedApiType = overrides.apiType ?? this.apiType
-      provider = createProvider(resolvedApiType, {
-        apiKey: overrides.apiKey ?? this.apiCredentials.key,
-        baseURL: overrides.baseURL ?? this.apiCredentials.baseUrl,
+      // Create abort controller for this query
+      this.abortCtrl = opts.abortController || new AbortController()
+      if (opts.abortSignal) {
+        opts.abortSignal.addEventListener('abort', () => this.abortCtrl?.abort(), { once: true })
+      }
+
+      // Resolve systemPrompt (handle preset object)
+      let systemPrompt: string | undefined
+      let appendSystemPrompt = opts.appendSystemPrompt
+      if (typeof opts.systemPrompt === 'object' && opts.systemPrompt?.type === 'preset') {
+        systemPrompt = undefined // Use engine default (default style)
+        if (opts.systemPrompt.append) {
+          appendSystemPrompt = (appendSystemPrompt || '') + '\n' + opts.systemPrompt.append
+        }
+      } else {
+        systemPrompt = opts.systemPrompt as string | undefined
+      }
+
+      // Build canUseTool based on permission mode
+      const permMode = opts.permissionMode ?? 'bypassPermissions'
+      const canUseTool: CanUseToolFn = opts.canUseTool ?? (async (tool) => {
+        if (permMode === 'bypassPermissions' || permMode === 'dontAsk' || permMode === 'auto') {
+          return { behavior: 'allow' }
+        }
+        if (permMode === 'plan') {
+          return tool.isReadOnly?.()
+            ? { behavior: 'allow' }
+            : { behavior: 'deny', message: `Permission mode "plan" only allows read-only tools. Denied ${tool.name}.` }
+        }
+        if (permMode === 'acceptEdits') {
+          return tool.name === 'Bash'
+            ? { behavior: 'deny', message: 'Bash requires an explicit canUseTool approval in acceptEdits mode.' }
+            : { behavior: 'allow' }
+        }
+        return {
+          behavior: 'deny',
+          message: `Permission mode "${permMode}" requires an explicit canUseTool approval handler.`,
+        }
       })
-    }
 
-    // Create query engine with current conversation state
-    const engine = new QueryEngine({
-      cwd,
-      model: opts.model || this.modelId,
-      provider,
-      tools,
-      systemPrompt,
-      appendSystemPrompt,
-      maxTurns: opts.maxTurns ?? 10,
-      maxBudgetUsd: opts.maxBudgetUsd,
-      maxTokens: opts.maxTokens ?? 16384,
-      thinking: opts.thinking,
-      jsonSchema: opts.jsonSchema,
-      canUseTool,
-      includePartialMessages: opts.includePartialMessages ?? false,
-      abortSignal: this.abortCtrl.signal,
-      agents: opts.agents,
-      hookRegistry: this.hookRegistry,
-      sessionId: this.sid,
-    })
-    this.currentEngine = engine
+      // Resolve tools with overrides
+      let tools = this.toolPool
+      if (overrides?.allowedTools || overrides?.disallowedTools) {
+        tools = filterTools(tools, overrides.allowedTools, overrides.disallowedTools)
+      }
+      if (overrides?.tools) {
+        const ot = overrides.tools
+        if (Array.isArray(ot) && ot.length > 0 && typeof ot[0] === 'string') {
+          tools = filterTools(this.toolPool, ot as string[])
+        } else if (Array.isArray(ot)) {
+          tools = ot as ToolDefinition[]
+        }
+      }
 
-    // Inject existing conversation history
-    for (const msg of this.history) {
-      (engine as any).messages.push(msg)
-    }
-
-    // Run the engine
-    for await (const event of engine.submitMessage(prompt)) {
-      yield event
-
-      // Track assistant messages for multi-turn persistence
-      if (event.type === 'assistant') {
-        const uuid = crypto.randomUUID()
-        const timestamp = new Date().toISOString()
-        this.messageLog.push({
-          type: 'assistant',
-          message: event.message,
-          uuid,
-          timestamp,
+      // Recreate provider if overrides change credentials or apiType
+      let provider = this.provider
+      if (overrides?.apiType || overrides?.apiKey || overrides?.baseURL) {
+        const resolvedApiType = overrides.apiType ?? this.apiType
+        provider = createProvider(resolvedApiType, {
+          apiKey: overrides.apiKey ?? this.apiCredentials.key,
+          baseURL: overrides.baseURL ?? this.apiCredentials.baseUrl,
         })
       }
+
+      // Create query engine with current conversation state
+      const engine = new QueryEngine({
+        cwd,
+        allowedDirectories,
+        sandbox: opts.sandbox,
+        model: opts.model || this.modelId,
+        provider,
+        tools,
+        systemPrompt,
+        appendSystemPrompt,
+        maxTurns: opts.maxTurns ?? 10,
+        maxBudgetUsd: opts.maxBudgetUsd,
+        maxTokens: opts.maxTokens ?? 16384,
+        thinking: opts.thinking,
+        jsonSchema: opts.jsonSchema,
+        canUseTool,
+        includePartialMessages: opts.includePartialMessages ?? false,
+        abortSignal: this.abortCtrl.signal,
+        agents: opts.agents,
+        hookRegistry: this.hookRegistry,
+        sessionId: this.sid,
+      })
+      this.currentEngine = engine
+
+      // Inject existing conversation history
+      engine.messages.push(...this.history)
+
+      const userUuid = crypto.randomUUID()
+      this.messageLog.push({
+        type: 'user',
+        message: { role: 'user', content: prompt },
+        uuid: userUuid,
+        timestamp: new Date().toISOString(),
+      })
+
+      // Run the engine
+      for await (const event of engine.submitMessage(prompt)) {
+        yield event
+
+        // Track assistant messages for multi-turn persistence
+        if (event.type === 'assistant') {
+          const uuid = crypto.randomUUID()
+          const timestamp = new Date().toISOString()
+          this.messageLog.push({
+            type: 'assistant',
+            message: event.message,
+            uuid,
+            timestamp,
+          })
+        }
+      }
+
+      // Persist conversation state for multi-turn
+      this.history = engine.getMessages()
+    } finally {
+      this.currentEngine = null
+      this.abortCtrl = null
+      this.queryInProgress = false
     }
-
-    // Persist conversation state for multi-turn
-    this.history = engine.getMessages()
-
-    // Add user message to tracked messages
-    const userUuid = crypto.randomUUID()
-    this.messageLog.push({
-      type: 'user',
-      message: { role: 'user', content: prompt },
-      uuid: userUuid,
-      timestamp: new Date().toISOString(),
-    })
   }
 
   /**
@@ -466,6 +495,9 @@ export class Agent {
    * Optionally persist session to disk.
    */
   async close(): Promise<void> {
+    this.closed = true
+    this.abortCtrl?.abort()
+
     // Persist session if enabled
     if (this.cfg.persistSession !== false && this.history.length > 0) {
       try {

@@ -26,17 +26,23 @@ export const BashTool = defineTool({
   isConcurrencySafe: false,
   async call(input, context) {
     const { command, timeout: userTimeout } = input
-    const timeoutMs = Math.min(userTimeout || 120000, 600000)
+    const timeoutMs = Math.min(Math.max(Number(userTimeout) || 120000, 1), 600000)
 
-    return new Promise<string>((resolve) => {
+    return new Promise<{ data: string; is_error?: boolean }>((resolve) => {
       const chunks: Buffer[] = []
       const errChunks: Buffer[] = []
 
       const proc = spawn('bash', ['-c', command], {
         cwd: context.cwd,
-        env: { ...process.env },
+        env: {
+          HOME: process.env.HOME,
+          PATH: process.env.PATH,
+          SHELL: process.env.SHELL,
+          TERM: process.env.TERM,
+        },
         timeout: timeoutMs,
-        stdio: ['pipe', 'pipe', 'pipe'],
+        detached: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
       })
 
       proc.stdout?.on('data', (data: Buffer) => chunks.push(data))
@@ -44,7 +50,11 @@ export const BashTool = defineTool({
 
       if (context.abortSignal) {
         context.abortSignal.addEventListener('abort', () => {
-          proc.kill('SIGTERM')
+          try {
+            if (proc.pid) process.kill(-proc.pid, 'SIGTERM')
+          } catch {
+            proc.kill('SIGTERM')
+          }
         }, { once: true })
       }
 
@@ -64,11 +74,11 @@ export const BashTool = defineTool({
           output = output.slice(0, 50000) + '\n...(truncated)...\n' + output.slice(-50000)
         }
 
-        resolve(output || '(no output)')
+        resolve({ data: output || '(no output)', is_error: code !== 0 && code !== null })
       })
 
       proc.on('error', (err) => {
-        resolve(`Error executing command: ${err.message}`)
+        resolve({ data: `Error executing command: ${err.message}`, is_error: true })
       })
     })
   },

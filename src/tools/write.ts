@@ -3,8 +3,9 @@
  */
 
 import { writeFile, mkdir } from 'fs/promises'
-import { resolve, dirname } from 'path'
+import { dirname } from 'path'
 import { defineTool } from './types.js'
+import { resolveAllowedPath } from '../utils/path.js'
 
 export const FileWriteTool = defineTool({
   name: 'Write',
@@ -26,9 +27,8 @@ export const FileWriteTool = defineTool({
   isReadOnly: false,
   isConcurrencySafe: false,
   async call(input, context) {
-    const filePath = resolve(context.cwd, input.file_path)
-
     try {
+      const filePath = resolveAllowedPath(context.cwd, input.file_path, context.allowedDirectories)
       await mkdir(dirname(filePath), { recursive: true })
       await writeFile(filePath, input.content, 'utf-8')
 

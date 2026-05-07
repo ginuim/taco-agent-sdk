@@ -6,10 +6,20 @@
  */
 
 /**
- * Rough token estimation: ~4 chars per token (conservative).
+ * Rough token estimation.
+ * ASCII text is about 4 chars/token; CJK characters are much denser.
  */
 export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4)
+  let cjk = 0
+  let other = 0
+  for (const char of text) {
+    if (/[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/u.test(char)) {
+      cjk++
+    } else {
+      other++
+    }
+  }
+  return Math.ceil(cjk + other / 4)
 }
 
 /**
@@ -66,25 +76,26 @@ export function getTokenCountFromUsage(usage: {
  * Get the context window size for a model.
  */
 export function getContextWindowSize(model: string): number {
+  const normalized = model.toLowerCase()
   // Anthropic model context windows
-  if (model.includes('opus-4') && model.includes('1m')) return 1_000_000
-  if (model.includes('opus-4')) return 200_000
-  if (model.includes('sonnet-4')) return 200_000
-  if (model.includes('haiku-4')) return 200_000
-  if (model.includes('claude-3')) return 200_000
+  if (normalized.includes('opus-4') && normalized.includes('1m')) return 1_000_000
+  if (normalized.includes('opus-4')) return 200_000
+  if (normalized.includes('sonnet-4')) return 200_000
+  if (normalized.includes('haiku-4')) return 200_000
+  if (normalized.includes('claude-3')) return 200_000
 
   // OpenAI model context windows
-  if (model.includes('gpt-4o')) return 128_000
-  if (model.includes('gpt-4-turbo')) return 128_000
-  if (model.includes('gpt-4-1')) return 1_000_000
-  if (model.includes('gpt-4')) return 128_000
-  if (model.includes('gpt-3.5')) return 16_385
-  if (model.includes('o1')) return 200_000
-  if (model.includes('o3')) return 200_000
-  if (model.includes('o4')) return 200_000
+  if (normalized.startsWith('gpt-4o')) return 128_000
+  if (normalized.startsWith('gpt-4-turbo')) return 128_000
+  if (normalized.startsWith('gpt-4-1')) return 1_000_000
+  if (normalized.startsWith('gpt-4')) return 128_000
+  if (normalized.startsWith('gpt-3.5')) return 16_385
+  if (normalized.startsWith('o1')) return 200_000
+  if (normalized.startsWith('o3')) return 200_000
+  if (normalized.startsWith('o4')) return 200_000
 
   // DeepSeek models
-  if (model.includes('deepseek')) return 128_000
+  if (normalized.includes('deepseek')) return 128_000
 
   // Default
   return 200_000
@@ -135,11 +146,23 @@ export const MODEL_PRICING: Record<string, { input: number; output: number }> = 
  */
 export function estimateCost(
   model: string,
-  usage: { input_tokens: number; output_tokens: number },
+  usage: {
+    input_tokens: number
+    output_tokens: number
+    cache_creation_input_tokens?: number
+    cache_read_input_tokens?: number
+  },
 ): number {
-  const pricing = Object.entries(MODEL_PRICING).find(([key]) =>
-    model.includes(key),
-  )?.[1] ?? { input: 3 / 1_000_000, output: 15 / 1_000_000 }
+  const normalized = model.toLowerCase()
+  const pricing = Object.entries(MODEL_PRICING)
+    .sort(([a], [b]) => b.length - a.length)
+    .find(([key]) => normalized === key || normalized.startsWith(`${key}-`))?.[1] ??
+    { input: 3 / 1_000_000, output: 15 / 1_000_000 }
 
-  return usage.input_tokens * pricing.input + usage.output_tokens * pricing.output
+  const inputTokens =
+    usage.input_tokens +
+    (usage.cache_creation_input_tokens || 0) +
+    (usage.cache_read_input_tokens || 0)
+
+  return inputTokens * pricing.input + usage.output_tokens * pricing.output
 }

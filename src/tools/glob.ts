@@ -2,8 +2,8 @@
  * GlobTool - File pattern matching
  */
 
-import { resolve } from 'path'
 import { defineTool } from './types.js'
+import { resolveAllowedPath } from '../utils/path.js'
 
 export const GlobTool = defineTool({
   name: 'Glob',
@@ -25,7 +25,9 @@ export const GlobTool = defineTool({
   isReadOnly: true,
   isConcurrencySafe: true,
   async call(input, context) {
-    const searchDir = input.path ? resolve(context.cwd, input.path) : context.cwd
+    const searchDir = input.path
+      ? resolveAllowedPath(context.cwd, input.path, context.allowedDirectories)
+      : context.cwd
     const { pattern } = input
 
     try {
@@ -52,10 +54,9 @@ export const GlobTool = defineTool({
     // Fallback: use bash find/glob
     const { spawn } = await import('child_process')
     return new Promise<string>((resolvePromise) => {
-      // Use bash glob expansion or find
-      const cmd = `shopt -s globstar nullglob 2>/dev/null; cd ${JSON.stringify(searchDir)} && ls -1d ${pattern} 2>/dev/null | head -500`
-      const proc = spawn('bash', ['-c', cmd], {
+      const proc = spawn('bash', ['-c', 'shopt -s globstar nullglob; compgen -G "$PATTERN" | head -500'], {
         cwd: searchDir,
+        env: { PATH: process.env.PATH, PATTERN: pattern },
         timeout: 30000,
       })
 

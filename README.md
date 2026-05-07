@@ -369,13 +369,14 @@ npx tsx examples/web/server.ts
 | `apiKey`             | `string`                                | `CODEANY_API_KEY`      | API key                                                              |
 | `baseURL`            | `string`                                | —                      | Custom API endpoint                                                  |
 | `cwd`                | `string`                                | `process.cwd()`        | Working directory                                                    |
+| `additionalDirectories` | `string[]`                          | —                      | Extra directories file tools may access                              |
 | `systemPrompt`       | `string`                                | —                      | System prompt override                                               |
 | `appendSystemPrompt` | `string`                                | —                      | Append to default system prompt                                      |
 | `tools`              | `ToolDefinition[]`                      | All built-in           | Available tools                                                      |
 | `allowedTools`       | `string[]`                              | —                      | Tool allow-list                                                      |
 | `disallowedTools`    | `string[]`                              | —                      | Tool deny-list                                                       |
 | `permissionMode`     | `string`                                | `bypassPermissions`    | `default` / `acceptEdits` / `dontAsk` / `bypassPermissions` / `plan` |
-| `canUseTool`         | `function`                              | —                      | Custom permission callback                                           |
+| `canUseTool`         | `function`                              | —                      | Custom permission callback; inherited by subagents                   |
 | `maxTurns`           | `number`                                | `10`                   | Max agentic turns                                                    |
 | `maxBudgetUsd`       | `number`                                | —                      | Spending cap                                                         |
 | `thinking`           | `ThinkingConfig`                        | `{ type: 'adaptive' }` | Extended thinking                                                    |
@@ -388,7 +389,7 @@ npx tsx examples/web/server.ts
 | `persistSession`     | `boolean`                               | `true`                 | Persist session to disk                                              |
 | `sessionId`          | `string`                                | auto                   | Explicit session ID                                                  |
 | `outputFormat`       | `{ type: 'json_schema', schema }`       | —                      | Structured output                                                    |
-| `sandbox`            | `SandboxSettings`                       | —                      | Filesystem/network sandbox                                           |
+| `sandbox`            | `SandboxSettings`                       | —                      | `WebFetch` network policy (`allowedDomains`, `allowLocalBinding`)    |
 | `settingSources`     | `SettingSource[]`                       | —                      | Load AGENT.md, project settings                                      |
 | `env`                | `Record<string, string>`                | —                      | Environment variables                                                |
 | `abortController`    | `AbortController`                       | —                      | Cancellation controller                                              |
@@ -405,6 +406,15 @@ npx tsx examples/web/server.ts
 | `CODEANY_AUTH_TOKEN` | Alternative auth token                                   |
 
 ## Built-in tools
+
+File tools resolve paths against `cwd` and may only read or write inside `cwd`
+plus `additionalDirectories` (supports absolute paths and `~` home paths,
+for example `~/.agents`). `WebFetch` only accepts `http`/`https` URLs,
+rejects local/private hosts by default, strips sensitive request headers,
+honors `sandbox.network.allowedDomains` when provided, and can explicitly
+allow local/private targets with `sandbox.network.allowLocalBinding: true`.
+`Bash` runs with a minimal
+environment and reports non-zero exit codes as tool errors.
 
 | Tool                                       | Description                                  |
 | ------------------------------------------ | -------------------------------------------- |

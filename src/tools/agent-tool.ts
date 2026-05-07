@@ -114,14 +114,17 @@ export const AgentTool: ToolDefinition = {
     // Create subagent engine
     const engine = new QueryEngine({
       cwd: context.cwd,
+      allowedDirectories: context.allowedDirectories,
+      sandbox: context.sandbox,
       model: subModel,
       provider,
       tools,
       systemPrompt,
       maxTurns: agentDef?.maxTurns || 10,
       maxTokens: 16384,
-      canUseTool: async () => ({ behavior: 'allow' }),
+      canUseTool: context.canUseTool ?? (async () => ({ behavior: 'deny', message: 'Subagent permissions unavailable' })),
       includePartialMessages: false,
+      abortSignal: context.abortSignal,
     })
 
     // Run the subagent
@@ -133,7 +136,7 @@ export const AgentTool: ToolDefinition = {
         if (event.type === 'assistant') {
           for (const block of event.message.content) {
             if ('text' in block && block.text) {
-              resultText = block.text
+              resultText += block.text
             }
             if ('name' in block) {
               toolCalls.push(block.name as string)

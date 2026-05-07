@@ -3,8 +3,10 @@
  */
 
 import { readFile, stat } from 'fs/promises'
-import { resolve } from 'path'
 import { defineTool } from './types.js'
+import { resolveAllowedPath } from '../utils/path.js'
+
+const MAX_READ_BYTES = 10 * 1024 * 1024
 
 export const FileReadTool = defineTool({
   name: 'Read',
@@ -30,12 +32,15 @@ export const FileReadTool = defineTool({
   isReadOnly: true,
   isConcurrencySafe: true,
   async call(input, context) {
-    const filePath = resolve(context.cwd, input.file_path)
-
+    let filePath = input.file_path
     try {
+      filePath = resolveAllowedPath(context.cwd, input.file_path, context.allowedDirectories)
       const fileStat = await stat(filePath)
       if (fileStat.isDirectory()) {
         return { data: `Error: ${filePath} is a directory, not a file. Use Bash with 'ls' to list directory contents.`, is_error: true }
+      }
+      if (fileStat.size > MAX_READ_BYTES) {
+        return { data: `Error: File too large to read safely (${fileStat.size} bytes). Limit is ${MAX_READ_BYTES} bytes.`, is_error: true }
       }
 
       // Check for binary/image files

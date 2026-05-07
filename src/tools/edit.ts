@@ -3,8 +3,8 @@
  */
 
 import { readFile, writeFile } from 'fs/promises'
-import { resolve } from 'path'
 import { defineTool } from './types.js'
+import { resolveAllowedPath } from '../utils/path.js'
 
 export const FileEditTool = defineTool({
   name: 'Edit',
@@ -34,7 +34,7 @@ export const FileEditTool = defineTool({
   isReadOnly: false,
   isConcurrencySafe: false,
   async call(input, context) {
-    const filePath = resolve(context.cwd, input.file_path)
+    let filePath = input.file_path
     const { old_string, new_string, replace_all } = input
 
     if (old_string === new_string) {
@@ -42,6 +42,7 @@ export const FileEditTool = defineTool({
     }
 
     try {
+      filePath = resolveAllowedPath(context.cwd, input.file_path, context.allowedDirectories)
       let content = await readFile(filePath, 'utf-8')
 
       if (!content.includes(old_string)) {
