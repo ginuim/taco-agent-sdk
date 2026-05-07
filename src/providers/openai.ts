@@ -11,6 +11,7 @@ import type {
   LLMProvider,
   CreateMessageParams,
   CreateMessageResponse,
+  MessageStreamEvent,
   NormalizedMessageParam,
   NormalizedContentBlock,
   NormalizedTool,
@@ -64,6 +65,13 @@ interface OpenAIChatResponse {
   }
 }
 
+interface OpenAIStreamToolState {
+  id: string
+  name: string
+  arguments: string
+  started: boolean
+}
+
 // --------------------------------------------------------------------------
 // Provider
 // --------------------------------------------------------------------------
@@ -78,8 +86,7 @@ export class OpenAIProvider implements LLMProvider {
     this.baseURL = (opts.baseURL || 'https://api.openai.com/v1').replace(/\/$/, '')
   }
 
-  async createMessage(params: CreateMessageParams): Promise<CreateMessageResponse> {
-    // Convert to OpenAI format
+  private buildRequestBody(params: CreateMessageParams): Record<string, any> {
     const messages = this.convertMessages(params.system, params.messages)
     const tools = params.tools ? this.convertTools(params.tools) : undefined
 
@@ -92,6 +99,12 @@ export class OpenAIProvider implements LLMProvider {
     if (tools && tools.length > 0) {
       body.tools = tools
     }
+
+    return body
+  }
+
+  async createMessage(params: CreateMessageParams): Promise<CreateMessageResponse> {
+    const body = this.buildRequestBody(params)
 
     // Make API call
     const response = await fetch(`${this.baseURL}/chat/completions`, {
@@ -116,6 +129,135 @@ export class OpenAIProvider implements LLMProvider {
 
     // Convert response back to normalized format
     return this.convertResponse(data)
+  }
+
+  async *createMessageStream(params: CreateMessageParams): AsyncGenerator<MessageStreamEvent> {
+    const body = {
+      ...this.buildRequestBody(params),
+      stream: true,
+      stream_options: { include_usage: true },
+    }
+
+    const response = await fetch(`${this.baseURL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify(body),
+    })
+
+    if (!response.ok) {
+      const errBody = await response.text().catch(() => '')
+      const err: any = new Error(
+        `OpenAI API error: ${response.status} ${response.statusText}: ${errBody}`,
+      )
+      err.status = response.status
+      throw err
+    }
+
+    const textParts: string[] = []
+    const toolStates = new Map<number, OpenAIStreamToolState>()
+    let finishReason = 'stop'
+    let usage: CreateMessageResponse['usage'] = {
+      input_tokens: 0,
+      output_tokens: 0,
+    }
+
+    for await (const data of this.iterSseData(response.body)) {
+      if (data === '[DONE]') break
+
+      const chunk = JSON.parse(data)
+      if (chunk.usage) {
+        usage = {
+          input_tokens: chunk.usage.prompt_tokens ?? 0,
+          output_tokens: chunk.usage.completion_tokens ?? 0,
+        }
+      }
+
+      const choice = chunk.choices?.[0]
+      if (!choice) continue
+
+      if (choice.finish_reason) {
+        finishReason = choice.finish_reason
+      }
+
+      const delta = choice.delta
+      if (delta?.content) {
+        textParts.push(delta.content)
+        yield { type: 'text_delta', text: delta.content }
+      }
+
+      for (const toolCall of delta?.tool_calls ?? []) {
+        const index = toolCall.index as number
+        const state = toolStates.get(index) ?? {
+          id: '',
+          name: '',
+          arguments: '',
+          started: false,
+        }
+
+        if (toolCall.id) state.id = toolCall.id
+        if (toolCall.function?.name) state.name = toolCall.function.name
+
+        if (!state.started && state.id && state.name) {
+          state.started = true
+          yield {
+            type: 'tool_use_start',
+            index,
+            id: state.id,
+            name: state.name,
+          }
+        }
+
+        const argumentDelta = toolCall.function?.arguments
+        if (argumentDelta) {
+          state.arguments += argumentDelta
+          yield {
+            type: 'tool_input_delta',
+            index,
+            inputDelta: argumentDelta,
+          }
+        }
+
+        toolStates.set(index, state)
+      }
+    }
+
+    const content: NormalizedResponseBlock[] = []
+    const text = textParts.join('')
+    if (text) {
+      content.push({ type: 'text', text })
+    }
+
+    for (const state of toolStates.values()) {
+      let input: any
+      try {
+        input = JSON.parse(state.arguments)
+      } catch {
+        input = state.arguments
+      }
+
+      content.push({
+        type: 'tool_use',
+        id: state.id,
+        name: state.name,
+        input,
+      })
+    }
+
+    if (content.length === 0) {
+      content.push({ type: 'text', text: '' })
+    }
+
+    yield {
+      type: 'message',
+      response: {
+        content,
+        stopReason: this.mapFinishReason(finishReason),
+        usage,
+      },
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -310,6 +452,41 @@ export class OpenAIProvider implements LLMProvider {
         return 'tool_use'
       default:
         return reason
+    }
+  }
+
+  private async *iterSseData(body: ReadableStream<Uint8Array> | null): AsyncGenerator<string> {
+    if (!body) throw new Error('OpenAI stream response has no body')
+
+    const reader = body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split(/\r?\n/)
+        buffer = lines.pop() ?? ''
+
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed.startsWith('data:')) continue
+          yield trimmed.slice('data:'.length).trim()
+        }
+      }
+
+      buffer += decoder.decode()
+      for (const line of buffer.split(/\r?\n/)) {
+        const trimmed = line.trim()
+        if (trimmed.startsWith('data:')) {
+          yield trimmed.slice('data:'.length).trim()
+        }
+      }
+    } finally {
+      reader.releaseLock()
     }
   }
 }

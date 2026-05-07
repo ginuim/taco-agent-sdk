@@ -72,6 +72,12 @@ export type NormalizedResponseBlock =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: any }
 
+export type MessageStreamEvent =
+  | { type: 'text_delta'; text: string }
+  | { type: 'tool_use_start'; index: number; id: string; name: string }
+  | { type: 'tool_input_delta'; index: number; inputDelta: string }
+  | { type: 'message'; response: CreateMessageResponse }
+
 // --------------------------------------------------------------------------
 // Provider Interface
 // --------------------------------------------------------------------------
@@ -82,4 +88,7 @@ export interface LLMProvider {
 
   /** Send a message and get a response. */
   createMessage(params: CreateMessageParams): Promise<CreateMessageResponse>
+
+  /** Send a message and stream normalized response deltas. */
+  createMessageStream?(params: CreateMessageParams): AsyncGenerator<MessageStreamEvent>
 }

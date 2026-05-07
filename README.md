@@ -1,17 +1,20 @@
-# Open Agent SDK (TypeScript)
+# taco-agent-sdk (TypeScript)
 
-[![npm version](https://img.shields.io/npm/v/@codeany/open-agent-sdk)](https://www.npmjs.com/package/@codeany/open-agent-sdk)
+[![npm version](https://img.shields.io/npm/v/taco-agent-sdk)](https://www.npmjs.com/package/taco-agent-sdk)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
-Open-source Agent SDK that runs the full agent loop **in-process** — no subprocess or CLI required. Supports both **Anthropic** and **OpenAI-compatible** APIs. Deploy anywhere: cloud, serverless, Docker, CI/CD.
+`taco-agent-sdk` is a maintained fork of `@codeany/open-agent-sdk`.
+The original upstream project is no longer actively maintained.
 
-Also available in **Go**: [open-agent-sdk-go](https://github.com/codeany-ai/open-agent-sdk-go)
+This SDK runs the full agent loop **in-process** — no subprocess or CLI required.
+Supports both **Anthropic** and **OpenAI-compatible** APIs.
+Deploy anywhere: cloud, serverless, Docker, CI/CD.
 
 ## Get started
 
 ```bash
-npm install @codeany/open-agent-sdk
+pnpm install taco-agent-sdk
 ```
 
 Set your API key:
@@ -44,7 +47,7 @@ export CODEANY_MODEL=anthropic/claude-sonnet-4
 ### One-shot query (streaming)
 
 ```typescript
-import { query } from "@codeany/open-agent-sdk";
+import { query } from "taco-agent-sdk";
 
 for await (const message of query({
   prompt: "Read package.json and tell me the project name.",
@@ -64,7 +67,7 @@ for await (const message of query({
 ### Simple blocking prompt
 
 ```typescript
-import { createAgent } from "@codeany/open-agent-sdk";
+import { createAgent } from "taco-agent-sdk";
 
 const agent = createAgent({ model: "claude-sonnet-4-6" });
 const result = await agent.prompt("What files are in this project?");
@@ -78,7 +81,7 @@ console.log(
 ### OpenAI / GPT models
 
 ```typescript
-import { createAgent } from "@codeany/open-agent-sdk";
+import { createAgent } from "taco-agent-sdk";
 
 const agent = createAgent({
   apiType: "openai-completions",
@@ -96,7 +99,7 @@ The `apiType` is auto-detected from model name — models containing `gpt-`, `o1
 ### Multi-turn conversation
 
 ```typescript
-import { createAgent } from "@codeany/open-agent-sdk";
+import { createAgent } from "taco-agent-sdk";
 
 const agent = createAgent({ maxTurns: 5 });
 
@@ -111,11 +114,43 @@ console.log(r2.text);
 console.log(`Session messages: ${agent.getMessages().length}`);
 ```
 
+### Token-level streaming (typewriter UX)
+
+Set `includePartialMessages: true` to receive incremental events during generation.
+
+- `partial_message` with `partial.type: "text"` streams normal assistant text deltas.
+- `partial_message` with `partial.type: "tool_use"` can stream incremental tool payload text (for example `Write` tool `content` chunks), so UI can show progressive file-writing output instead of waiting for the full tool JSON.
+
+```typescript
+import { query } from "taco-agent-sdk";
+
+for await (const message of query({
+  prompt: "Write a long markdown report to ./report.md and explain it.",
+  options: {
+    includePartialMessages: true,
+    permissionMode: "bypassPermissions",
+  },
+})) {
+  if (message.type === "partial_message") {
+    if (message.partial.type === "text") {
+      process.stdout.write(message.partial.text || "");
+    } else if (
+      message.partial.type === "tool_use" &&
+      message.partial.name === "Write" &&
+      message.partial.field === "content"
+    ) {
+      // Streamed write content chunk
+      process.stdout.write(message.partial.input || "");
+    }
+  }
+}
+```
+
 ### Custom tools (Zod schema)
 
 ```typescript
 import { z } from "zod";
-import { query, tool, createSdkMcpServer } from "@codeany/open-agent-sdk";
+import { query, tool, createSdkMcpServer } from "taco-agent-sdk";
 
 const getWeather = tool(
   "get_weather",
@@ -144,7 +179,7 @@ import {
   createAgent,
   getAllBaseTools,
   defineTool,
-} from "@codeany/open-agent-sdk";
+} from "taco-agent-sdk";
 
 const calculator = defineTool({
   name: "Calculator",
@@ -175,7 +210,7 @@ import {
   createAgent,
   registerSkill,
   getAllSkills,
-} from "@codeany/open-agent-sdk";
+} from "taco-agent-sdk";
 
 // Register a custom skill
 registerSkill({
@@ -203,7 +238,7 @@ console.log(result.text);
 ### Hooks (lifecycle events)
 
 ```typescript
-import { createAgent, createHookRegistry } from "@codeany/open-agent-sdk";
+import { createAgent, createHookRegistry } from "taco-agent-sdk";
 
 const hooks = createHookRegistry({
   PreToolUse: [
@@ -229,7 +264,7 @@ const hooks = createHookRegistry({
 ### MCP server integration
 
 ```typescript
-import { createAgent } from "@codeany/open-agent-sdk";
+import { createAgent } from "taco-agent-sdk";
 
 const agent = createAgent({
   mcpServers: {
@@ -248,7 +283,7 @@ await agent.close();
 ### Subagents
 
 ```typescript
-import { query } from "@codeany/open-agent-sdk";
+import { query } from "taco-agent-sdk";
 
 for await (const msg of query({
   prompt: "Use the code-reviewer agent to review src/index.ts",
@@ -269,7 +304,7 @@ for await (const msg of query({
 ### Permissions
 
 ```typescript
-import { query } from "@codeany/open-agent-sdk";
+import { query } from "taco-agent-sdk";
 
 // Read-only agent — can only analyze, not modify
 for await (const msg of query({
@@ -357,6 +392,7 @@ npx tsx examples/web/server.ts
 | `settingSources`     | `SettingSource[]`                       | —                      | Load AGENT.md, project settings                                      |
 | `env`                | `Record<string, string>`                | —                      | Environment variables                                                |
 | `abortController`    | `AbortController`                       | —                      | Cancellation controller                                              |
+| `includePartialMessages` | `boolean`                            | `false`                | Emit `partial_message` events for token-level text/tool deltas      |
 
 ### Environment variables
 
@@ -415,7 +451,7 @@ Register custom skills with `registerSkill()`.
 ┌──────────────────────────────────────────────────────┐
 │                   Your Application                    │
 │                                                       │
-│   import { createAgent } from '@codeany/open-agent-sdk' │
+│   import { createAgent } from 'taco-agent-sdk' │
 └────────────────────────┬─────────────────────────────┘
                          │
               ┌──────────▼──────────┐

@@ -23,6 +23,8 @@ import type {
 import type {
   LLMProvider,
   CreateMessageResponse,
+  CreateMessageParams,
+  MessageStreamEvent,
   NormalizedMessageParam,
   NormalizedTool,
 } from './providers/types.js'
@@ -68,6 +70,72 @@ interface ToolUseBlock {
   id: string
   name: string
   input: any
+}
+
+interface StreamingToolState {
+  name: string
+  inputJson: string
+  emittedContent: string
+}
+
+function extractJsonStringPrefix(json: string, key: string): string | undefined {
+  const keyNeedle = `"${key}"`
+  const keyIndex = json.indexOf(keyNeedle)
+  if (keyIndex < 0) return undefined
+
+  const colonIndex = json.indexOf(':', keyIndex + keyNeedle.length)
+  if (colonIndex < 0) return undefined
+
+  let start = colonIndex + 1
+  while (start < json.length && /\s/.test(json[start])) start++
+  if (json[start] !== '"') return undefined
+
+  let value = ''
+  for (let i = start + 1; i < json.length; i++) {
+    const ch = json[i]
+    if (ch === '"') return value
+    if (ch !== '\\') {
+      value += ch
+      continue
+    }
+
+    i++
+    if (i >= json.length) return value
+    const escaped = json[i]
+    switch (escaped) {
+      case '"':
+      case '\\':
+      case '/':
+        value += escaped
+        break
+      case 'b':
+        value += '\b'
+        break
+      case 'f':
+        value += '\f'
+        break
+      case 'n':
+        value += '\n'
+        break
+      case 'r':
+        value += '\r'
+        break
+      case 't':
+        value += '\t'
+        break
+      case 'u': {
+        const hex = json.slice(i + 1, i + 5)
+        if (hex.length < 4 || !/^[0-9a-fA-F]{4}$/.test(hex)) return value
+        value += String.fromCharCode(parseInt(hex, 16))
+        i += 4
+        break
+      }
+      default:
+        value += escaped
+    }
+  }
+
+  return value
 }
 
 // ============================================================================
@@ -270,31 +338,35 @@ export class QueryEngine {
       this.turnCount++
       turnsRemaining--
 
+      const messageParams: CreateMessageParams = {
+        model: this.config.model,
+        maxTokens: this.config.maxTokens,
+        system: systemPrompt,
+        messages: apiMessages,
+        tools: tools.length > 0 ? tools : undefined,
+        thinking:
+          this.config.thinking?.type === 'enabled' &&
+          this.config.thinking.budgetTokens
+            ? {
+                type: 'enabled',
+                budget_tokens: this.config.thinking.budgetTokens,
+              }
+            : undefined,
+      }
+
       // Make API call with retry via provider
       let response: CreateMessageResponse
       const apiStart = performance.now()
       try {
-        response = await withRetry(
-          async () => {
-            return this.provider.createMessage({
-              model: this.config.model,
-              maxTokens: this.config.maxTokens,
-              system: systemPrompt,
-              messages: apiMessages,
-              tools: tools.length > 0 ? tools : undefined,
-              thinking:
-                this.config.thinking?.type === 'enabled' &&
-                this.config.thinking.budgetTokens
-                  ? {
-                      type: 'enabled',
-                      budget_tokens: this.config.thinking.budgetTokens,
-                    }
-                  : undefined,
-            })
-          },
-          undefined,
-          this.config.abortSignal,
-        )
+        if (this.config.includePartialMessages && this.provider.createMessageStream) {
+          response = yield* this.streamProviderMessage(messageParams)
+        } else {
+          response = await withRetry(
+            async () => this.provider.createMessage(messageParams),
+            undefined,
+            this.config.abortSignal,
+          )
+        }
       } catch (err: any) {
         // Handle prompt-too-long by compacting
         if (isPromptTooLongError(err) && !this.compactState.compacted) {
@@ -604,6 +676,81 @@ export class QueryEngine {
         is_error: true,
         tool_name: block.name,
       }
+    }
+  }
+
+  private async *streamProviderMessage(
+    params: CreateMessageParams,
+  ): AsyncGenerator<SDKMessage, CreateMessageResponse> {
+    const toolStates = new Map<number, StreamingToolState>()
+    let finalResponse: CreateMessageResponse | undefined
+
+    for await (const event of this.provider.createMessageStream!(params)) {
+      if (this.config.abortSignal?.aborted) {
+        throw new Error('Aborted')
+      }
+
+      if (event.type === 'message') {
+        finalResponse = event.response
+        continue
+      }
+
+      const partial = this.partialFromStreamEvent(event, toolStates)
+      if (partial) yield partial
+    }
+
+    if (!finalResponse) {
+      throw new Error('Provider stream ended without a final message')
+    }
+
+    return finalResponse
+  }
+
+  private partialFromStreamEvent(
+    event: Exclude<MessageStreamEvent, { type: 'message' }>,
+    toolStates: Map<number, StreamingToolState>,
+  ): SDKMessage | undefined {
+    if (event.type === 'text_delta') {
+      if (!event.text) return undefined
+      return {
+        type: 'partial_message',
+        partial: { type: 'text', text: event.text },
+      }
+    }
+
+    if (event.type === 'tool_use_start') {
+      toolStates.set(event.index, {
+        name: event.name,
+        inputJson: '',
+        emittedContent: '',
+      })
+      return undefined
+    }
+
+    const state = toolStates.get(event.index)
+    if (!state) return undefined
+    state.inputJson += event.inputDelta
+
+    if (state.name !== 'Write') return undefined
+
+    const contentPrefix = extractJsonStringPrefix(state.inputJson, 'content')
+    if (contentPrefix === undefined) return undefined
+
+    const delta = contentPrefix.startsWith(state.emittedContent)
+      ? contentPrefix.slice(state.emittedContent.length)
+      : contentPrefix
+    state.emittedContent = contentPrefix
+
+    if (!delta) return undefined
+
+    return {
+      type: 'partial_message',
+      partial: {
+        type: 'tool_use',
+        name: state.name,
+        field: 'content',
+        input: delta,
+      },
     }
   }
 

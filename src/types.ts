@@ -108,6 +108,7 @@ export interface SDKPartialMessage {
     type: 'text' | 'tool_use'
     text?: string
     name?: string
+    field?: string
     input?: string
   }
 }
